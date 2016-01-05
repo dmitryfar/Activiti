@@ -14,9 +14,12 @@
 package org.activiti.engine;
 
 import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.sql.DataSource;
 
+import org.activiti.engine.cfg.MailServerInfo;
 import org.activiti.engine.impl.asyncexecutor.AsyncExecutor;
 import org.activiti.engine.impl.cfg.BeansConfigurationHelper;
 import org.activiti.engine.impl.cfg.StandaloneInMemProcessEngineConfiguration;
@@ -112,6 +115,8 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
   protected boolean useTLS = false;
   protected String mailServerDefaultFrom = "activiti@localhost";
   protected String mailSessionJndi;
+  protected Map<String,MailServerInfo> mailServers = new HashMap<String,MailServerInfo>();
+  protected Map<String, String> mailSessionsJndi = new HashMap<String, String>();
 
   protected String databaseType;
   protected String databaseSchemaUpdate = DB_SCHEMA_UPDATE_FALSE;
@@ -178,8 +183,8 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
 
   /**
    * In some situations you want to set the schema to use for table checks / generation if the database metadata
-   * doesn't return that correctly, see https://jira.codehaus.org/browse/ACT-1220,
-   * https://jira.codehaus.org/browse/ACT-1062
+   * doesn't return that correctly, see https://activiti.atlassian.net/browse/ACT-1220,
+   * https://activiti.atlassian.net/browse/ACT-1062
    */
   protected String databaseSchema = null;
   
@@ -208,6 +213,8 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
    */
   protected boolean useClassForNameClassLoading = true;
   protected ProcessEngineLifecycleListener processEngineLifecycleListener;
+  
+  protected boolean enableProcessDefinitionInfoCache = false;
 
   /** use one of the static createXxxx methods instead */
   protected ProcessEngineConfiguration() {
@@ -305,7 +312,7 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
     return this;
   }
 
-  public String getMailSesionJndi() {
+  public String getMailSessionJndi() {
     return mailSessionJndi;
   }
   
@@ -347,6 +354,32 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
   
   public ProcessEngineConfiguration setMailServerDefaultFrom(String mailServerDefaultFrom) {
     this.mailServerDefaultFrom = mailServerDefaultFrom;
+    return this;
+  }
+  
+  public MailServerInfo getMailServer(String tenantId) {
+    return mailServers.get(tenantId);
+  }
+  
+  public Map<String, MailServerInfo> getMailServers() {
+    return mailServers;
+  }
+  
+  public ProcessEngineConfiguration setMailServers(Map<String, MailServerInfo> mailServers) {
+    this.mailServers.putAll(mailServers);
+    return this;
+  }
+  
+  public String getMailSessionJndi(String tenantId) {
+    return mailSessionsJndi.get(tenantId);
+  }
+  
+  public Map<String, String> getMailSessionsJndi() {
+    return mailSessionsJndi;
+  }
+  
+  public ProcessEngineConfiguration setMailSessionsJndi(Map<String, String> mailSessionsJndi) {
+    this.mailSessionsJndi.putAll(mailSessionsJndi);
     return this;
   }
   
@@ -761,6 +794,15 @@ public abstract class ProcessEngineConfiguration implements EngineServices {
 
   public ProcessEngineConfiguration setAsyncFailedJobWaitTime(int asyncFailedJobWaitTime) {
     this.asyncFailedJobWaitTime = asyncFailedJobWaitTime;
+    return this;
+  }
+
+  public boolean isEnableProcessDefinitionInfoCache() {
+    return enableProcessDefinitionInfoCache;
+  }
+
+  public ProcessEngineConfiguration setEnableProcessDefinitionInfoCache(boolean enableProcessDefinitionInfoCache) {
+    this.enableProcessDefinitionInfoCache = enableProcessDefinitionInfoCache;
     return this;
   }
 }

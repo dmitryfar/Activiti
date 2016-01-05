@@ -43,7 +43,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public class ProcessInstanceCollectionResourceTest extends BaseSpringRestTestCase {
 
   // check if process instance query with business key with and without includeProcess Variables
-  // related to http://jira.codehaus.org/browse/ACT-1992
+  // related to https://activiti.atlassian.net/browse/ACT-1992
   @Deployment(resources = {"org/activiti/rest/service/api/runtime/ProcessInstanceResourceTest.process-one.bpmn20.xml"})
   public void testGetProcessInstancesByBusinessKeyAndIncludeVariables() throws Exception {
   	HashMap<String, Object> variables = new HashMap<String, Object>();
@@ -85,7 +85,7 @@ public class ProcessInstanceCollectionResourceTest extends BaseSpringRestTestCas
     assertEquals(1, variableNodes.size());
     
     variableNodes = dataNode.get("variables");
-    assertEquals(variableNodes.size(), 1);
+    assertEquals(1, variableNodes.size());
     assertNotNull(variableNodes.get(0).get("name"));
     assertNotNull(variableNodes.get(0).get("value"));
    

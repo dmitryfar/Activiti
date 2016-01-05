@@ -34,7 +34,9 @@ import java.util.Set;
 import javax.naming.InitialContext;
 import javax.sql.DataSource;
 
+import org.activiti.bpmn.model.BpmnModel;
 import org.activiti.engine.ActivitiException;
+import org.activiti.engine.DynamicBpmnService;
 import org.activiti.engine.FormService;
 import org.activiti.engine.HistoryService;
 import org.activiti.engine.IdentityService;
@@ -50,6 +52,7 @@ import org.activiti.engine.delegate.event.ActivitiEventListener;
 import org.activiti.engine.delegate.event.ActivitiEventType;
 import org.activiti.engine.delegate.event.impl.ActivitiEventDispatcherImpl;
 import org.activiti.engine.form.AbstractFormType;
+import org.activiti.engine.impl.DynamicBpmnServiceImpl;
 import org.activiti.engine.impl.FormServiceImpl;
 import org.activiti.engine.impl.HistoryServiceImpl;
 import org.activiti.engine.impl.IdentityServiceImpl;
@@ -106,7 +109,6 @@ import org.activiti.engine.impl.calendar.DurationBusinessCalendar;
 import org.activiti.engine.impl.calendar.MapBusinessCalendarManager;
 import org.activiti.engine.impl.cfg.standalone.StandaloneMybatisTransactionContextFactory;
 import org.activiti.engine.impl.db.DbIdGenerator;
-import org.activiti.engine.impl.db.DbSqlSession;
 import org.activiti.engine.impl.db.DbSqlSessionFactory;
 import org.activiti.engine.impl.db.IbatisVariableTypeHandler;
 import org.activiti.engine.impl.delegate.DefaultDelegateInterceptor;
@@ -160,6 +162,7 @@ import org.activiti.engine.impl.persistence.deploy.DefaultDeploymentCache;
 import org.activiti.engine.impl.persistence.deploy.Deployer;
 import org.activiti.engine.impl.persistence.deploy.DeploymentCache;
 import org.activiti.engine.impl.persistence.deploy.DeploymentManager;
+import org.activiti.engine.impl.persistence.deploy.ProcessDefinitionInfoCache;
 import org.activiti.engine.impl.persistence.entity.AttachmentEntityManager;
 import org.activiti.engine.impl.persistence.entity.ByteArrayEntityManager;
 import org.activiti.engine.impl.persistence.entity.CommentEntityManager;
@@ -179,6 +182,7 @@ import org.activiti.engine.impl.persistence.entity.JobEntityManager;
 import org.activiti.engine.impl.persistence.entity.ModelEntityManager;
 import org.activiti.engine.impl.persistence.entity.ProcessDefinitionEntity;
 import org.activiti.engine.impl.persistence.entity.ProcessDefinitionEntityManager;
+import org.activiti.engine.impl.persistence.entity.ProcessDefinitionInfoEntityManager;
 import org.activiti.engine.impl.persistence.entity.PropertyEntityManager;
 import org.activiti.engine.impl.persistence.entity.ResourceEntityManager;
 import org.activiti.engine.impl.persistence.entity.TableDataManager;
@@ -203,6 +207,8 @@ import org.activiti.engine.impl.variable.EntityManagerSessionFactory;
 import org.activiti.engine.impl.variable.IntegerType;
 import org.activiti.engine.impl.variable.JPAEntityListVariableType;
 import org.activiti.engine.impl.variable.JPAEntityVariableType;
+import org.activiti.engine.impl.variable.JsonType;
+import org.activiti.engine.impl.variable.LongJsonType;
 import org.activiti.engine.impl.variable.LongStringType;
 import org.activiti.engine.impl.variable.LongType;
 import org.activiti.engine.impl.variable.NullType;
@@ -218,6 +224,7 @@ import org.activiti.validation.ProcessValidator;
 import org.activiti.validation.ProcessValidatorFactory;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.ibatis.builder.xml.XMLConfigBuilder;
+import org.apache.ibatis.builder.xml.XMLMapperBuilder;
 import org.apache.ibatis.datasource.pooled.PooledDataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
@@ -230,6 +237,8 @@ import org.apache.ibatis.type.JdbcType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 
 /**
  * @author Tom Baeyens
@@ -239,6 +248,9 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
 
   private static Logger log = LoggerFactory.getLogger(ProcessEngineConfigurationImpl.class);
   
+  public static final int DEFAULT_GENERIC_MAX_LENGTH_STRING= 4000;
+  public static final int DEFAULT_ORACLE_MAX_LENGTH_STRING= 2000;
+
   public static final String DB_SCHEMA_UPDATE_CREATE = "create";
   public static final String DB_SCHEMA_UPDATE_DROP_CREATE = "drop-create";
 
@@ -255,6 +267,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected TaskService taskService = new TaskServiceImpl(this);
   protected FormService formService = new FormServiceImpl();
   protected ManagementService managementService = new ManagementServiceImpl();
+  protected DynamicBpmnService dynamicBpmnService = new DynamicBpmnServiceImpl(this);
   
   // COMMAND EXECUTORS ////////////////////////////////////////////////////////
   
@@ -295,6 +308,10 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   
   protected int processDefinitionCacheLimit = -1; // By default, no limit
   protected DeploymentCache<ProcessDefinitionEntity> processDefinitionCache;
+  protected int bpmnModelCacheLimit = -1; // By default, no limit
+  protected DeploymentCache<BpmnModel> bpmnModelCache;
+  protected int processDefinitionInfoCacheLimit = -1; // By default, no limit
+  protected ProcessDefinitionInfoCache processDefinitionInfoCache;
   
   protected int knowledgeBaseCacheLimit = -1;
   protected DeploymentCache<Object> knowledgeBaseCache;
@@ -310,6 +327,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected TransactionFactory transactionFactory;
   
   protected Set<Class<?>> customMybatisMappers;
+  protected Set<String> customMybatisXMLMappers;
 
   // ID GENERATOR /////////////////////////////////////////////////////////////
   
@@ -386,14 +404,19 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected int batchSizeTasks = 25;
   
   /**
-   * Experimental setting. Default is false.
-   * 
-   * If set to true, in the {@link DbSqlSession} during the handling of delete operations,
-   * those operations of the same type are merged together. 
-   * (eg if you have two 'DELETE from X where id=Y' and 'DELETE from X where id=W', it will be merged
-   * into one delete statement 'DELETE from X where id=Y or id=W'.
+   * If set to true, enables bulk insert (grouping sql inserts together).
+   * Default true. For some databases (eg DB2 on Zos: https://activiti.atlassian.net/browse/ACT-4042) needs to be set to false
    */
-  protected boolean isOptimizeDeleteOperationsEnabled;
+  protected boolean isBulkInsertEnabled = true;
+  
+  /**
+  * Some databases have a limit of how many parameters one sql insert can have (eg SQL Server, 2000 params (!= insert statements) ).
+  * Tweak this parameter in case of exceptions indicating too much is being put into one bulk insert,
+  * or make it higher if your database can cope with it and there are inserts with a huge amount of data.
+  * 
+  * By default: 100.
+  */
+  protected int maxNrOfStatementsInBulkInsert = 100;
   
   protected boolean enableEventDispatcher = true;
   protected ActivitiEventDispatcher eventDispatcher;
@@ -403,6 +426,13 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   // Event logging to database
   protected boolean enableDatabaseEventLogging = false;
   
+  /**
+   *  Define a max length for storing String variable types in the database.
+   *  Mainly used for the Oracle NVARCHAR2 limit of 2000 characters
+   */
+  protected int maxLengthStringVariableType = -1;
+  
+  protected ObjectMapper objectMapper = new ObjectMapper();
   
   // buildProcessEngine ///////////////////////////////////////////////////////
   
@@ -419,6 +449,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     initProcessDiagramGenerator();
     initHistoryLevel();
     initExpressionManager();
+    initDataSource();
     initVariableTypes();
     initBeans();
     initFormEngines();
@@ -435,7 +466,6 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     initJobHandlers();
     initJobExecutor();
     initAsyncExecutor();
-    initDataSource();
     initTransactionFactory();
     initSqlSessionFactory();
     initSessionFactories();
@@ -541,6 +571,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     initService(taskService);
     initService(formService);
     initService(managementService);
+    initService(dynamicBpmnService);
   }
 
   protected void initService(Object service) {
@@ -609,6 +640,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected static Properties databaseTypeMappings = getDefaultDatabaseTypeMappings();
   
   public static final String DATABASE_TYPE_H2 = "h2";
+  public static final String DATABASE_TYPE_HSQL = "hsql";
   public static final String DATABASE_TYPE_MYSQL = "mysql";
   public static final String DATABASE_TYPE_ORACLE = "oracle";
   public static final String DATABASE_TYPE_POSTGRES = "postgres";
@@ -618,12 +650,13 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected static Properties getDefaultDatabaseTypeMappings() {
     Properties databaseTypeMappings = new Properties();
     databaseTypeMappings.setProperty("H2", DATABASE_TYPE_H2);
+    databaseTypeMappings.setProperty("HSQL Database Engine", DATABASE_TYPE_HSQL);
     databaseTypeMappings.setProperty("MySQL", DATABASE_TYPE_MYSQL);
     databaseTypeMappings.setProperty("Oracle", DATABASE_TYPE_ORACLE);
     databaseTypeMappings.setProperty("PostgreSQL", DATABASE_TYPE_POSTGRES);
     databaseTypeMappings.setProperty("Microsoft SQL Server", DATABASE_TYPE_MSSQL);
     databaseTypeMappings.setProperty(DATABASE_TYPE_DB2,DATABASE_TYPE_DB2);
-    databaseTypeMappings.setProperty(DATABASE_TYPE_DB2,DATABASE_TYPE_DB2);
+    databaseTypeMappings.setProperty("DB2",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/NT",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/NT64",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2 UDP",DATABASE_TYPE_DB2);
@@ -631,6 +664,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     databaseTypeMappings.setProperty("DB2/LINUX390",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/LINUXX8664",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/LINUXZ64",DATABASE_TYPE_DB2);
+    databaseTypeMappings.setProperty("DB2/LINUXPPC64",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/400 SQL",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2/6000",DATABASE_TYPE_DB2);
     databaseTypeMappings.setProperty("DB2 UDB iSeries",DATABASE_TYPE_DB2);
@@ -739,11 +773,26 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   }
 	
 	protected Configuration parseMybatisConfiguration(Configuration configuration, XMLConfigBuilder parser) {
-	  return parser.parse();
+	  return parseCustomMybatisXMLMappers(parser.parse());
+  }
+	
+	protected Configuration parseCustomMybatisXMLMappers(Configuration configuration) {
+	  if (getCustomMybatisXMLMappers() != null)
+    // see XMLConfigBuilder.mapperElement()
+    for(String resource: getCustomMybatisXMLMappers()){
+      XMLMapperBuilder mapperParser = new XMLMapperBuilder(getResourceAsStream(resource), 
+          configuration, resource, configuration.getSqlFragments());
+      mapperParser.parse();
+    }
+    return configuration;
   }
   
+	protected InputStream getResourceAsStream(String resource) {
+    return ReflectUtil.getResourceAsStream(resource);
+  }
+	
   protected InputStream getMyBatisXmlConfigurationSteam() {
-    return ReflectUtil.getResourceAsStream(DEFAULT_MYBATIS_MAPPING_FILE);
+    return getResourceAsStream(DEFAULT_MYBATIS_MAPPING_FILE);
   }
   
   public Set<Class<?>> getCustomMybatisMappers() {
@@ -754,6 +803,14 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
 	this.customMybatisMappers = customMybatisMappers;
   }
   
+  public Set<String> getCustomMybatisXMLMappers() {
+    return customMybatisXMLMappers;
+  }
+  
+  public void setCustomMybatisXMLMappers(Set<String> customMybatisXMLMappers) {
+    this.customMybatisXMLMappers = customMybatisXMLMappers;
+  }
+  
   // session factories ////////////////////////////////////////////////////////
   
 
@@ -761,7 +818,9 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     if (sessionFactories==null) {
       sessionFactories = new HashMap<Class<?>, SessionFactory>();
 
-      dbSqlSessionFactory = new DbSqlSessionFactory();
+      if (dbSqlSessionFactory == null) {
+        dbSqlSessionFactory = new DbSqlSessionFactory();
+      }
       dbSqlSessionFactory.setDatabaseType(databaseType);
       dbSqlSessionFactory.setIdGenerator(idGenerator);
       dbSqlSessionFactory.setSqlSessionFactory(sqlSessionFactory);
@@ -771,7 +830,8 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
       dbSqlSessionFactory.setTablePrefixIsSchema(tablePrefixIsSchema);
       dbSqlSessionFactory.setDatabaseCatalog(databaseCatalog);
       dbSqlSessionFactory.setDatabaseSchema(databaseSchema);
-      dbSqlSessionFactory.setOptimizeDeleteOperationsEnabled(isOptimizeDeleteOperationsEnabled);
+      dbSqlSessionFactory.setBulkInsertEnabled(isBulkInsertEnabled, databaseType);
+      dbSqlSessionFactory.setMaxNrOfStatementsInBulkInsert(maxNrOfStatementsInBulkInsert);
       addSessionFactory(dbSqlSessionFactory);
       
       addSessionFactory(new GenericManagerFactory(AttachmentEntityManager.class));
@@ -789,6 +849,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
       addSessionFactory(new GenericManagerFactory(IdentityLinkEntityManager.class));
       addSessionFactory(new GenericManagerFactory(JobEntityManager.class));
       addSessionFactory(new GenericManagerFactory(ProcessDefinitionEntityManager.class));
+      addSessionFactory(new GenericManagerFactory(ProcessDefinitionInfoEntityManager.class));
       addSessionFactory(new GenericManagerFactory(PropertyEntityManager.class));
       addSessionFactory(new GenericManagerFactory(ResourceEntityManager.class));
       addSessionFactory(new GenericManagerFactory(ByteArrayEntityManager.class));
@@ -913,7 +974,24 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
         } else {
           processDefinitionCache = new DefaultDeploymentCache<ProcessDefinitionEntity>(processDefinitionCacheLimit);
         }
-      } 
+      }
+      
+      // BpmnModel cache
+      if (bpmnModelCache == null) {
+        if (bpmnModelCacheLimit <= 0) {
+          bpmnModelCache = new DefaultDeploymentCache<BpmnModel>();
+        } else {
+          bpmnModelCache = new DefaultDeploymentCache<BpmnModel>(bpmnModelCacheLimit);
+        }
+      }
+      
+      if (processDefinitionInfoCache == null) {
+        if (processDefinitionInfoCacheLimit <= 0) {
+          processDefinitionInfoCache = new ProcessDefinitionInfoCache(commandExecutor);
+        } else {
+          processDefinitionInfoCache = new ProcessDefinitionInfoCache(commandExecutor, processDefinitionInfoCacheLimit);
+        }
+      }
       
       // Knowledge base cache (used for Drools business task)
       if (knowledgeBaseCache == null) {
@@ -925,6 +1003,8 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
       }
       
       deploymentManager.setProcessDefinitionCache(processDefinitionCache);
+      deploymentManager.setBpmnModelCache(bpmnModelCache);
+      deploymentManager.setProcessDefinitionInfoCache(processDefinitionInfoCache);
       deploymentManager.setKnowledgeBaseCache(knowledgeBaseCache);
     }
   }
@@ -1192,8 +1272,8 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   protected void initCommandContextFactory() {
     if (commandContextFactory==null) {
       commandContextFactory = new CommandContextFactory();
-      commandContextFactory.setProcessEngineConfiguration(this);
     }
+    commandContextFactory.setProcessEngineConfiguration(this);
   }
 
   protected void initTransactionContextFactory() {
@@ -1211,8 +1291,8 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
         }
       }
       variableTypes.addType(new NullType());
-      variableTypes.addType(new StringType(4000));
-      variableTypes.addType(new LongStringType(4001));
+      variableTypes.addType(new StringType(getMaxLengthString()));
+      variableTypes.addType(new LongStringType(getMaxLengthString() + 1));
       variableTypes.addType(new BooleanType());
       variableTypes.addType(new ShortType());
       variableTypes.addType(new IntegerType());
@@ -1220,15 +1300,29 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
       variableTypes.addType(new DateType());
       variableTypes.addType(new DoubleType());
       variableTypes.addType(new UUIDType());
+      variableTypes.addType(new JsonType(getMaxLengthString(), objectMapper));
+      variableTypes.addType(new LongJsonType(getMaxLengthString() + 1, objectMapper));
       variableTypes.addType(new ByteArrayType());
       variableTypes.addType(new SerializableType());
       variableTypes.addType(new CustomObjectType("item", ItemInstance.class));
       variableTypes.addType(new CustomObjectType("message", MessageInstance.class));
-      if (customPostVariableTypes!=null) {
+      if (customPostVariableTypes != null) {
         for (VariableType customVariableType: customPostVariableTypes) {
           variableTypes.addType(customVariableType);
         }
       }
+    }
+  }
+
+  protected int getMaxLengthString() {
+    if (maxLengthStringVariableType == -1) {
+      if ("oracle".equalsIgnoreCase(databaseType) == true) {
+        return DEFAULT_ORACLE_MAX_LENGTH_STRING;
+      } else {
+        return DEFAULT_GENERIC_MAX_LENGTH_STRING;
+      }
+    } else {
+      return maxLengthStringVariableType;
     }
   }
 
@@ -1388,7 +1482,7 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
   	if (enableDatabaseEventLogging) {
   		// Database event logging uses the default logging mechanism and adds
   		// a specific event listener to the list of event listeners
-  		getEventDispatcher().addEventListener(new EventLogger(clock));
+  		getEventDispatcher().addEventListener(new EventLogger(clock, objectMapper));
   	}
   }
 
@@ -1517,6 +1611,15 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
     return this;
   }
   
+  public DynamicBpmnService getDynamicBpmnService() {
+    return dynamicBpmnService;
+  }
+
+  public ProcessEngineConfigurationImpl setDynamicBpmnService(DynamicBpmnService dynamicBpmnService) {
+    this.dynamicBpmnService = dynamicBpmnService;
+    return this;
+  }
+
   public ProcessEngineConfiguration getProcessEngineConfiguration() {
     return this;
   }
@@ -2040,5 +2143,35 @@ public abstract class ProcessEngineConfigurationImpl extends ProcessEngineConfig
 		this.enableDatabaseEventLogging = enableDatabaseEventLogging;
     return this;
 	}
-	
+
+  public int getMaxLengthStringVariableType() {
+    return maxLengthStringVariableType;
+  }
+
+  public ProcessEngineConfigurationImpl setMaxLengthStringVariableType(int maxLengthStringVariableType) {
+    this.maxLengthStringVariableType = maxLengthStringVariableType;
+    return this;
+  }
+  
+	public ProcessEngineConfigurationImpl setBulkInsertEnabled(boolean isBulkInsertEnabled) {
+		this.isBulkInsertEnabled = isBulkInsertEnabled;
+		return this;
+	}
+
+	public boolean isBulkInsertEnabled() {
+		return isBulkInsertEnabled;
+	}
+
+	public int getMaxNrOfStatementsInBulkInsert() {
+		return maxNrOfStatementsInBulkInsert;
+	}
+
+	public ProcessEngineConfigurationImpl setMaxNrOfStatementsInBulkInsert(int maxNrOfStatementsInBulkInsert) {
+		this.maxNrOfStatementsInBulkInsert = maxNrOfStatementsInBulkInsert;
+		return this;
+	}
+
+  public ObjectMapper getObjectMapper() {
+    return objectMapper;
+  }
 }

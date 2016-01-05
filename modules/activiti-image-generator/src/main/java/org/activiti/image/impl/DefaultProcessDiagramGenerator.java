@@ -16,6 +16,7 @@ package org.activiti.image.impl;
 import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -30,6 +31,7 @@ import org.activiti.bpmn.model.BoundaryEvent;
 import org.activiti.bpmn.model.BpmnModel;
 import org.activiti.bpmn.model.BusinessRuleTask;
 import org.activiti.bpmn.model.CallActivity;
+import org.activiti.bpmn.model.CompensateEventDefinition;
 import org.activiti.bpmn.model.EndEvent;
 import org.activiti.bpmn.model.ErrorEventDefinition;
 import org.activiti.bpmn.model.Event;
@@ -75,8 +77,8 @@ import org.activiti.image.ProcessDiagramGenerator;
  */
 public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
 
-  protected final Map<Class<? extends BaseElement>, ActivityDrawInstruction> activityDrawInstructions = new HashMap<Class<? extends BaseElement>, ActivityDrawInstruction>();
-  protected final Map<Class<? extends BaseElement>, ArtifactDrawInstruction> artifactDrawInstructions = new HashMap<Class<? extends BaseElement>, ArtifactDrawInstruction>();
+  protected Map<Class<? extends BaseElement>, ActivityDrawInstruction> activityDrawInstructions = new HashMap<Class<? extends BaseElement>, ActivityDrawInstruction>();
+  protected Map<Class<? extends BaseElement>, ArtifactDrawInstruction> artifactDrawInstructions = new HashMap<Class<? extends BaseElement>, ArtifactDrawInstruction>();
   
   public DefaultProcessDiagramGenerator() {
     this(1.0);
@@ -101,6 +103,8 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
             processDiagramCanvas.drawSignalStartEvent(graphicInfo, scaleFactor);
           } else if (eventDefinition instanceof MessageEventDefinition) {
             processDiagramCanvas.drawMessageStartEvent(graphicInfo, scaleFactor);
+          } else {
+            processDiagramCanvas.drawNoneStartEvent(graphicInfo);
           }
         } else {
           processDiagramCanvas.drawNoneStartEvent(graphicInfo);
@@ -136,6 +140,8 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
         if (throwEvent.getEventDefinitions() != null && !throwEvent.getEventDefinitions().isEmpty()) {
           if (throwEvent.getEventDefinitions().get(0) instanceof SignalEventDefinition) {
             processDiagramCanvas.drawThrowingSignalEvent(graphicInfo, scaleFactor);
+          } else if (throwEvent.getEventDefinitions().get(0) instanceof CompensateEventDefinition) {
+            processDiagramCanvas.drawThrowingCompensateEvent(graphicInfo, scaleFactor);
           } else {
             processDiagramCanvas.drawThrowingNoneEvent(graphicInfo, scaleFactor);
           }
@@ -296,8 +302,12 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
             
           } else if (boundaryEvent.getEventDefinitions().get(0) instanceof SignalEventDefinition) {
             processDiagramCanvas.drawCatchingSignalEvent(flowNode.getName(), graphicInfo, boundaryEvent.isCancelActivity(), scaleFactor);
+
           } else if (boundaryEvent.getEventDefinitions().get(0) instanceof MessageEventDefinition) {
             processDiagramCanvas.drawCatchingMessageEvent(flowNode.getName(), graphicInfo, boundaryEvent.isCancelActivity(), scaleFactor);  
+
+          } else if (boundaryEvent.getEventDefinitions().get(0) instanceof CompensateEventDefinition) {
+            processDiagramCanvas.drawCatchingCompensateEvent(graphicInfo, boundaryEvent.isCancelActivity(), scaleFactor);
           }
         }
         
@@ -460,6 +470,8 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
   protected DefaultProcessDiagramCanvas generateProcessDiagram(BpmnModel bpmnModel, String imageType, 
       List<String> highLightedActivities, List<String> highLightedFlows,
       String activityFontName, String labelFontName, ClassLoader customClassLoader, double scaleFactor) {
+  	
+  	prepareBpmnModel(bpmnModel);
     
     DefaultProcessDiagramCanvas processDiagramCanvas = initProcessDiagramCanvas(bpmnModel, imageType, activityFontName, labelFontName, customClassLoader);
     
@@ -490,6 +502,69 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
     }
     
     return processDiagramCanvas;
+  }
+  
+  protected void prepareBpmnModel(BpmnModel bpmnModel) {
+  
+  	// Need to make sure all elements have positive x and y. 
+  	// Check all graphicInfo and update the elements accordingly
+  	
+  	List<GraphicInfo> allGraphicInfos = new ArrayList<GraphicInfo>();
+  	if (bpmnModel.getLocationMap() != null) {
+  		allGraphicInfos.addAll(bpmnModel.getLocationMap().values());
+  	}
+  	if (bpmnModel.getLabelLocationMap() != null) {
+  		allGraphicInfos.addAll(bpmnModel.getLabelLocationMap().values());
+  	}
+  	if (bpmnModel.getFlowLocationMap() != null) {
+  		for (List<GraphicInfo> flowGraphicInfos : bpmnModel.getFlowLocationMap().values()) {
+  			allGraphicInfos.addAll(flowGraphicInfos);
+  		}
+  	}
+  	
+  	if (allGraphicInfos.size() > 0) {
+  		
+  		boolean needsTranslationX = false;
+  		boolean needsTranslationY = false;
+  		
+  		double lowestX = 0.0;
+  		double lowestY = 0.0;
+  		
+  		// Collect lowest x and y
+  		for (GraphicInfo graphicInfo : allGraphicInfos) {
+  			
+  			double x = graphicInfo.getX();
+  			double y = graphicInfo.getY();
+  			
+  			if (x < lowestX) {
+  				needsTranslationX = true;
+  				lowestX = x;
+  			}
+  			if (y < lowestY) {
+  				needsTranslationY = true;
+  				lowestY = y;
+  			}
+  			
+  		}
+  		
+  		// Update all graphicInfo objects
+  		if (needsTranslationX || needsTranslationY) {
+  			
+  			double translationX = Math.abs(lowestX);
+  			double translationY = Math.abs(lowestY);
+  			
+  			for (GraphicInfo graphicInfo : allGraphicInfos) {
+  				if (needsTranslationX) {
+  					graphicInfo.setX(graphicInfo.getX() + translationX);
+  				}
+  				if(needsTranslationY) {
+  					graphicInfo.setY(graphicInfo.getY() + translationY);
+  				}
+  			}
+  		}
+
+  	}
+  	
   }
 
   protected void drawActivity(DefaultProcessDiagramCanvas processDiagramCanvas, BpmnModel bpmnModel, 
@@ -576,8 +651,7 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
         // Draw sequenceflow label
         GraphicInfo labelGraphicInfo = bpmnModel.getLabelGraphicInfo(sequenceFlow.getId());
         if (labelGraphicInfo != null) {
-          GraphicInfo lineCenter = getLineCenter(graphicInfoList);
-          processDiagramCanvas.drawLabel(sequenceFlow.getName(), lineCenter, false);
+          processDiagramCanvas.drawLabel(sequenceFlow.getName(), labelGraphicInfo, false);
         }
       }
     }
@@ -827,7 +901,7 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
       }
     }
     
-    // Special case, see http://jira.codehaus.org/browse/ACT-1431
+    // Special case, see https://activiti.atlassian.net/browse/ACT-1431
     if (flowNodes.isEmpty() && bpmnModel.getPools().isEmpty() && nrOfLanes == 0) {
       // Nothing to show
       minX = 0;
@@ -866,8 +940,28 @@ public class DefaultProcessDiagramGenerator implements ProcessDiagramGenerator {
     }
     return flowNodes;
   }
+  
+  public Map<Class<? extends BaseElement>, ActivityDrawInstruction> getActivityDrawInstructions() {
+		return activityDrawInstructions;
+	}
 
-  protected interface ActivityDrawInstruction {
+	public void setActivityDrawInstructions(
+	    Map<Class<? extends BaseElement>, ActivityDrawInstruction> activityDrawInstructions) {
+		this.activityDrawInstructions = activityDrawInstructions;
+	}
+
+	public Map<Class<? extends BaseElement>, ArtifactDrawInstruction> getArtifactDrawInstructions() {
+		return artifactDrawInstructions;
+	}
+
+	public void setArtifactDrawInstructions(
+	    Map<Class<? extends BaseElement>, ArtifactDrawInstruction> artifactDrawInstructions) {
+		this.artifactDrawInstructions = artifactDrawInstructions;
+	}
+
+
+
+	protected interface ActivityDrawInstruction {
     void draw(DefaultProcessDiagramCanvas processDiagramCanvas, BpmnModel bpmnModel, FlowNode flowNode);
   }
 
